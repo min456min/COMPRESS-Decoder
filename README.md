@@ -53,45 +53,31 @@ For multi-GPU (or single-GPU) distributed training:
 torchrun --nproc_per_node=<N> train.py --config configs/decoder.yaml
 ```
 
-Checkpoints are written to the `checkpoint_dir` set in the config
-(`checkpoints` by default) as `latest.pt` plus a per-epoch snapshot.
-Training resumes automatically from the latest checkpoint if one exists.
 
 ## Sampling
-
-Three modes, selected with `--mode`:
-
 ```bash
-# Generate from held-out validation molecules, across every COMPRESS resolution K
-python sample.py --mode val --ckpt checkpoints/latest.pt --data data/data.pt
-
-# Generate from a single target molecule.pt (same structure as a data.pt entry)
-python sample.py --mode target --ckpt checkpoints/latest.pt --molecule data/molecule.pt
-
-# Generate from COMPRESS sites alone, with no reference molecule
-python sample.py --mode notarget --ckpt checkpoints/latest.pt --k_file data/k_only.pt --n_atoms 30
+# Generate from the held-out validation molecules included in this repo
+python sample.py --mode val --ckpt checkpoints/latest.pt
 
 # Generate straight from raw output of the COMPRESS site-optimization tool
 # (https://github.com/ADicksonLab/COMPRESS): point at the folder containing
-# that tool's "{name}_s{K}_COMPRESS.pt" files for one molecule. The atom
-# count M is auto-detected from AA_pos if --n_atoms is omitted.
+# that tool's "{name}_s{K}_COMPRESS.pt" files for one molecule.
 python sample.py --mode notarget --ckpt checkpoints/latest.pt --compress_dir path/to/compress_output --name test
 ```
+
+Also supports `--mode notarget --k_file ...` (a pre-bundled COMPRESS dict);
+see `python sample.py --help`.
 
 Each generated molecule is saved under `--out` (default `outputs/`) with a
 `{tag}_K{n}_try{t}_...` filename prefix (`tag` e.g. `val_mol0`, `target`,
 `notarget_M30`). Per (molecule, K, try), you get:
 
-- `..._sites.mol2` -- the COMPRESS representation V (its K sites), as a point cloud
-- `..._init.mol2` -- the initial atom cloud S0, before refinement
-- `..._result.mol2` -- the generated molecule
-- `..._result_attr.csv` -- per-atom element, position, and charge of the result
-- `{tag}_target.mol2` -- the ground-truth molecule (val/target modes only)
+- `..._sites.mol2` - the COMPRESS representation V (its K sites), as a point cloud
+- `..._init.mol2` - the initial atom cloud S0, before refinement
+- `..._result.mol2` - the generated molecule
+- `..._result_attr.csv` - per-atom element, position, and charge of the result
+- `{tag}_target.mol2` - the ground-truth molecule (val modes only)
 
-Discrete generation (atom type, bond order) uses CTMC sampling with two key
-parameters: `--eta` (stochasticity; default 40.0) and `--n_step` (number of
-Euler/CTMC steps; default 300). Higher `eta` means more re-masking and
-exploration during generation.
 
 ### Quick example
 
@@ -99,12 +85,7 @@ exploration during generation.
 python example.py
 ```
 
-Loads the first molecule in `data/val.pt`, reconstructs it from its K=25
-COMPRESS representation (or the closest available K), and writes the result
-to `outputs/example/`.
+Loads the first molecule in `data/val.pt`, reconstructs it from its K=25 COMPRESS representation, and writes the result to `outputs/example/`.
 
 ## Config
-
-All model, training, and vocabulary hyperparameters live in
-`configs/decoder.yaml`. Edit this file (or pass `--config` with a different
-path) rather than changing values in `train.py`.
+All model, training, and vocabulary hyperparameters live in `configs/decoder.yaml`. Edit this file (or pass `--config` with a different path) rather than changing values in `train.py`.

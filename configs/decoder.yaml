@@ -1,0 +1,46 @@
+# Training configuration for the COMPRESS decoder.
+
+seed: 42
+
+paths:
+  input_file: data/data.pt
+  checkpoint_dir: checkpoints
+  log_file: loss_log.csv
+
+training:
+  num_epochs: 100
+  batch_size: 20          # per-GPU batch size (effective = batch_size * world_size)
+  lr: 1.0e-4
+  weight_decay: 1.0e-12
+  grad_clip: 1.0
+  path_noise: [0.01, 0.01, 0.01, 0.01]   # [pos_x, pos_y, pos_z, chg]
+  k_per_molecule_per_epoch: 30
+  log_every_batches: 1000
+
+vocab:
+  num_atom_types: 13       # 0..10 real, 11 = reserved/unused slot, 12 MASK
+  atom_mask_id: 12
+  num_bond_types: 6        # 0 none, 1..4 real, 5 MASK
+  bond_mask_id: 5
+  num_atom_classes: 12     # 0..10 real, 11 = reserved/unused slot (never
+                           # trained on real data; kept only so weight
+                           # shapes match the released checkpoint)
+  num_bond_classes: 5
+
+model:
+  hidden_dim: 256
+  k_hidden_dim: 256
+  edge_dim: 128
+  time_dim: 64
+  atom_emb_dim: 64
+  bond_emb_dim: 64
+  n_rbf: 48
+  rbf_dmax: 12.0
+  n_blocks: 6              # total message-passing blocks
+  k_blocks: 3              # leading blocks that use K; rest refine from M only
+
+loss_weights:
+  lambda_pos: 3.0          # coordinates
+  lambda_charge: 1.0       # charge
+  lambda_atom: 0.4         # atom type
+  lambda_bond: 2.0         # bond order

@@ -35,12 +35,11 @@ and `K_keys`).
 
 ## Data
 
-`data.pt` is too large to track in this repository (GitHub blocks files over
-100MB). It is hosted on Zenodo instead: **[TODO: add Zenodo DOI/link]**.
-Download it and place it at `data/data.pt` before training.
+`data.pt`: **https://doi.org/10.5281/zenodo.21764574**. Download it and
+place it at `data/data.pt` before training.
 
-`data/val.pt` (the held-out validation split, ~83MB) is small enough to be
-tracked directly in this repository, so it's already included.
+`data/val.pt` (the held-out validation split) is included directly in this
+repository.
 
 ## Training
 
@@ -80,9 +79,8 @@ python sample.py --mode notarget --ckpt checkpoints/latest.pt --compress_dir pat
 ```
 
 Each generated molecule is saved under `--out` (default `outputs/`) with a
-`{tag}_K{n}_try{t}_...` filename prefix, where `tag` labels the molecule/mode
-(e.g. `val_mol0`, `target`, `notarget_M30`) so outputs from different runs
-don't collide in the same folder. Per (molecule, K, try), you get:
+`{tag}_K{n}_try{t}_...` filename prefix (`tag` e.g. `val_mol0`, `target`,
+`notarget_M30`). Per (molecule, K, try), you get:
 
 - `..._sites.mol2` -- the COMPRESS representation V (its K sites), as a point cloud
 - `..._init.mol2` -- the initial atom cloud S0, before refinement

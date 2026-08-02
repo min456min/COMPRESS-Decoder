@@ -210,9 +210,16 @@ class RandomKPerMoleculeDataset(Dataset):
         return len(self.index)
 
     def _valid_keys(self, sample):
+        # K ranges 1..M in the raw data (K_all includes the trivial K=M case,
+        # one site per atom / no compression), but training only uses
+        # K=1..M-1, matching the method section and sample.py's default range.
+        m_atoms = int(sample["M"])
         valid_keys = []
         for key in sample["K_keys"]:
-            if int(key[1:]) <= self.restrict_k_gt:
+            k_value = int(key[1:])
+            if k_value <= self.restrict_k_gt:
+                continue
+            if k_value >= m_atoms:
                 continue
             if _v_has_nan(sample["K_all"][key]):
                 self._n_skipped_nan += 1
@@ -245,7 +252,11 @@ class RandomKPerMoleculeDataset(Dataset):
         sample = self.raw_dataset[mol_idx]
         valid_keys = self._valid_keys(sample)
         if len(valid_keys) == 0:
-            valid_keys = [k for k in sample["K_keys"] if int(k[1:]) > self.restrict_k_gt]
+            m_atoms = int(sample["M"])
+            valid_keys = [
+                k for k in sample["K_keys"]
+                if self.restrict_k_gt < int(k[1:]) < m_atoms
+            ]
         key = random.choice(valid_keys)
         return {
             "AA": sample["AA"],

@@ -33,19 +33,12 @@ if __name__ == "__main__":
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(SEED)
 
-    # ----- DDP setup (single-node, multi-GPU via torchrun) -----
-    # Launch with: torchrun --nproc_per_node=<N> train.py
-    # Works unchanged for N=1 (single GPU), and also runs single-GPU fine
-    # without torchrun at all (the `else` branch below).
     ddp = "RANK" in os.environ and "WORLD_SIZE" in os.environ
     if ddp:
         backend = "nccl" if torch.distributed.is_nccl_available() else "gloo"
         local_rank = int(os.environ["LOCAL_RANK"])
         torch.cuda.set_device(local_rank)
         device = torch.device(f"cuda:{local_rank}")
-        # Rank 0 alone runs checkpointing each epoch while other ranks wait at
-        # dist.barrier(); bump the default 10-min NCCL timeout so a slow save
-        # doesn't kill the job.
         dist.init_process_group(backend=backend, timeout=datetime.timedelta(hours=2))
         world_size = int(os.environ["WORLD_SIZE"])
         global_rank = int(os.environ["RANK"])
@@ -80,8 +73,6 @@ if __name__ == "__main__":
     if is_main:
         print(f"Loaded raw molecules (train): {len(raw_dataset)}")
 
-    # input_file is the whole training set (pre-split by the user); validation
-    # is run separately, not during this script.
     train_raw = raw_dataset
     dataset = RandomKPerMoleculeDataset(
         raw_dataset=train_raw,
@@ -141,8 +132,6 @@ if __name__ == "__main__":
         model = DDP(model, device_ids=[local_rank], output_device=local_rank)
 
     for epoch in range(start_epoch, num_epochs + 1):
-        # Seed depends only on the epoch, so resampling is identical across
-        # ranks and a mid-epoch resume reproduces the same data order.
         random.seed(1000 + epoch)
         dataset.resample_index()
         if ddp:

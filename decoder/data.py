@@ -7,21 +7,14 @@ from scipy.optimize import linear_sum_assignment
 # ============================================================
 # Vocabulary
 # ============================================================
-# Atom input vocab (At):  0..10 real atom types, 11 = reserved/unused, 12 = MASK
-#                         -> num_atom_types = 13
-# Atom output classes:    0..10 real, 11 = reserved/unused -> num_atom_classes = 12
-#                         (MASK is never a target; class 11 is a leftover slot from
-#                         a disabled "fake atom" experiment that never trained on any
-#                         real data -- kept only so checkpoint weight shapes match)
-# Bond input vocab (Bt):  0 none, 1..4 real bond orders, 5 = MASK -> num_bond_types = 6
-# Bond output classes:    0..4 -> num_bond_classes = 5
+# Atom input vocab (At):  0..10 real atom types, 11 = unused, 12 = MASK, num_atom_types = 13
+# Atom output classes:    0..10 real, 11 = reserved/unused, num_atom_classes = 12
+# Bond input vocab (Bt):  0 none, 1..4 real bond orders, 5 = MASK, num_bond_types = 6
+# Bond output classes:    0..4, num_bond_classes = 5
 # ============================================================
 #
 # Naming note: following the method section, V is the COMPRESS representation
-# (K sites) and S is the all-atom structure (M atoms). "K" and "M" are still
-# used for the scalar site-count / atom-count (as in the paper), e.g. K_value,
-# K1/K2/... resolution keys, M_atoms.
-
+# (K sites) and S is the all-atom structure (M atoms). "K" and "M" are still used for the scalar site-count / atom-count (as in the paper), e.g. K_value, K1/K2/... resolution keys, M_atoms.
 
 def as_column(x):
     """Convert a 1D tensor from shape (N,) to (N, 1)."""

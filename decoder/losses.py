@@ -12,7 +12,7 @@ def masked_mse_loss(pred, target, mask):
 
 
 def atom_ce_loss(atom_logits, atom_target, atom_valid, atom_is_masked):
-    """CE on atom types, applied only to atoms still MASK at time t."""
+    """CE on atom types"""
     target = atom_target.clone()
     train_mask = atom_valid & atom_is_masked
     target = target.masked_fill(~train_mask, -100)
@@ -26,7 +26,7 @@ def atom_ce_loss(atom_logits, atom_target, atom_valid, atom_is_masked):
 
 
 def bond_ce_loss(bond_logits, bond_target, atom_valid, bond_is_masked):
-    """Weighted CE on bond types, applied only to bonds still MASK at time t."""
+    """Weighted CE on bond types"""
     B, M, _, C = bond_logits.shape
     target = bond_target.clone()
     pair_valid = atom_valid[:, :, None] & atom_valid[:, None, :]

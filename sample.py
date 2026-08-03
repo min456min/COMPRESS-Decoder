@@ -1,26 +1,19 @@
 """
-Sampling / inference for the COMPRESS graph decoder.
+Sampling / inference for the COMPRESS decoder.
 
-Following the method section's notation: V is the COMPRESS representation
-(K sites), S is the reconstructed all-atom structure (M atoms). K and M are
-still used for the scalar site-count / atom-count, e.g. K1..K(M-1), M_atoms.
+V = COMPRESS representation (K sites), S = all-atom structure (M atoms),
+per the method section. K/M are still used for the scalar site/atom counts.
 
-Three generation modes:
-  1) "val"     : take a few molecules from the validation split of data.pt and,
-                 for each, generate with every K size K1..K(M-1).
-  2) "target"  : one molecule.pt with the same structure as data.pt entries
-                 (AA + K_all + M); generate with K1..K(M-1).
-  3) "notarget": only the COMPRESS representation V is known (pos/chg/sig/eps
-                 for each of its K sites); the number of atoms M is supplied
-                 by the user. S0 is built from V alone and the model fills in
-                 everything. Generate with K1..K(M-1).
+Modes:
+  val      : validation molecules from data.pt, every K in K1..K(M-1).
+  notarget : only V is known; M is supplied by the user.
 
-Outputs, written under --out (see generate_for_entry for exact filenames):
-  - {tag}_target.mol2               ground-truth molecule (val/target modes only)
-  - {tag}_K{n}_sites.mol2            the V COMPRESS sites (resolution K), as a point cloud
-  - {tag}_K{n}_try{t}_init.mol2      the initial atom cloud S0, before refinement
-  - {tag}_K{n}_try{t}_result.mol2    the final predicted molecule
-  - {tag}_K{n}_try{t}_result_attr.csv  per-atom element/position/charge of the result
+Outputs under --out, per (molecule, K, try):
+  {tag}_target.mol2                  ground truth (val mode only)
+  {tag}_K{n}_sites.mol2               COMPRESS sites V
+  {tag}_K{n}_try{t}_init.mol2         initial atom cloud S0
+  {tag}_K{n}_try{t}_result.mol2       generated molecule
+  {tag}_K{n}_try{t}_result_attr.csv   per-atom element/position/charge
 """
 import os
 import re
@@ -35,24 +28,13 @@ from decoder.compress_io import load_k_all_from_compress_dir
 # ============================================================
 # Vocab (matches decoder/data.py)
 # ============================================================
-# Atom output classes: 0..10 real atom types, 11 = reserved/unused slot (a
-# disabled "fake atom" experiment that never trained on real data; kept only
-# so the checkpoint's weight shapes match -- should never actually be
-# predicted, but mapped to carbon just in case).
+# 11 = unused slot; 12 = MASK.
 ATOM_ID_TO_ELEMENT = {
-    0: "H",
-    1: "C",
-    2: "N",
-    3: "O",
-    4: "S",
-    5: "P",
-    6: "F",
-    7: "Cl",
-    8: "Br",
-    9: "I",
-    10: "C",   # "other" (ATOM_OTHER) -> fallback to carbon
-    11: "C",   # reserved/unused slot -> fallback to carbon
-    12: "C",   # MASK id -- should never appear in final output, but just in case
+    0: "H", 1: "C", 2: "N", 3: "O", 4: "S", 5: "P",
+    6: "F", 7: "Cl", 8: "Br", 9: "I",
+    10: "C",  # other
+    11: "C",  # unused slot
+    12: "C",  # MASK
 }
 ATOM_MASK_ID = 12
 BOND_MASK_ID = 5
@@ -63,30 +45,13 @@ BOND_ID_TO_MOL2 = {1: "1", 2: "2", 3: "3", 4: "ar"}
 # Prediction -> discrete conversion
 # ============================================================
 def atom_logits_to_ids(atom_logits):
-    """(1, M, num_atom_classes) -> atom_ids (M,) numpy."""
     return atom_logits.argmax(dim=-1)[0].detach().cpu().numpy()
 
 
 # ============================================================
-# CTMC (Campbell) discrete sampling, with purity (high-confidence-first)
-# unmasking. Tokens are integer ids; the MASK id is the highest class index.
-# Linear schedule: alpha_t = t, alpha_t_prime = 1.
-#
-# Per step:
-#   x1 ~ Categorical(p_1_given_t)                    # sample an endpoint guess
-#   unmask_prob = dt*(alpha_t' + eta*alpha_t)/(1-alpha_t)
-#   mask_prob   = dt*eta
-#   - reveal (unmask) some currently-MASK tokens to x1
-#   - re-mask some currently-unmasked tokens (lets the model fix mistakes)
-# Purity sampling (hc_thresh > 0) prefers to unmask the tokens the model is
-# most confident about first, while keeping the same expected total number of
-# reveals per step.
+# CTMC discrete sampling
 # ============================================================
 def _purity_unmask(xt, x1_probs, unmask_prob, mask_index, hc_thresh, device):
-    """
-    Boolean 'will_unmask' over currently-masked tokens, biased toward
-    high-confidence predictions first (same total expected unmask count).
-    """
     masked = (xt == mask_index)
     n_masked = int(masked.sum())
     if n_masked == 0:
@@ -111,17 +76,6 @@ def _purity_unmask(xt, x1_probs, unmask_prob, mask_index, hc_thresh, device):
 
 def campbell_step_tokens(xt, p1, t_i, dt, mask_index,
                          eta=40.0, hc_thresh=0.9, last_step=False, device="cpu"):
-    """
-    One CTMC step for a 1D tensor of tokens (single molecule).
-    Args:
-        xt       : (n,) current integer tokens (may be MASK).
-        p1       : (n, n_classes_no_mask) predicted endpoint probabilities.
-        t_i, dt  : current time and step size.
-        mask_index : the MASK token id.
-        eta        : stochasticity (higher -> more re-masking / exploration).
-        hc_thresh  : high-confidence threshold for purity unmasking.
-        last_step  : if True, do not re-mask (final commit).
-    """
     xt = xt.clone()
     x1 = torch.distributions.Categorical(probs=p1).sample()   # (n,) in [0, n_real)
     alpha_t = max(float(t_i), 0.0)
@@ -142,7 +96,7 @@ def campbell_step_tokens(xt, p1, t_i, dt, mask_index,
 
 
 # ============================================================
-# Writers  (mol2 + pdb only)
+# Writers  (mol2 only)
 # ============================================================
 def write_mol2(S_pred, atom_ids, bond_type, path, mol_name="CG"):
     """Write a molecule as MOL2."""
@@ -184,8 +138,7 @@ def write_mol2(S_pred, atom_ids, bond_type, path, mol_name="CG"):
 
 
 def write_target_mol2(aa, path, mol_name="target"):
-    """Write the ground-truth (target) molecule from an AA dict
-    (keys: pos, chg, atom_type, bond_type)."""
+    """Write the target molecule from an AA dict """
     pos = np.asarray(aa["pos"])
     chg = np.asarray(aa["chg"]).reshape(-1)
     atom_type = np.asarray(aa["atom_type"]).reshape(-1).astype(int)
@@ -225,9 +178,7 @@ def write_target_mol2(aa, path, mol_name="target"):
 
 
 def write_init_mol2(S0, path, mol_name="init"):
-    """Write the initial S0 cloud as MOL2 (no bonds, no atom types known yet).
-    All atoms drawn as carbon just for visualization. (Also reused to dump the
-    V/COMPRESS-site point cloud itself; see generate_for_entry.)"""
+    """Write the initial S0 cloud"""
     S0 = np.asarray(S0)
     coords = S0[:, :3]
     charges = S0[:, 3]
@@ -252,33 +203,35 @@ def write_init_mol2(S0, path, mol_name="init"):
     return path
 
 
-def write_attr_csv(S_pred, atom_ids, path):
-    """Write per-atom attributes (element, position, charge) as CSV."""
-    S_pred = np.asarray(S_pred)
+ 
+def write_site_attr_csv(V_data, path):
+    """Write per-site COMPRESS representation attributes (position, charge, sigma, epsilon) as CSV."""
+    pos = np.asarray(V_data["pos"])
+    chg = np.asarray(V_data["chg"]).reshape(-1)
+    sig = np.asarray(V_data["sig"]).reshape(-1)
+    eps = np.asarray(V_data["eps"]).reshape(-1)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as f:
-        f.write("atom_index,element,x,y,z,charge\n")
-        for i in range(S_pred.shape[0]):
-            elem = ATOM_ID_TO_ELEMENT.get(int(atom_ids[i]), "C")
-            x, y, z = S_pred[i, :3]
-            f.write(f"{i},{elem},{x:.4f},{y:.4f},{z:.4f},{float(S_pred[i, 3]):.6f}\n")
+        f.write("site_index,x,y,z,charge,sigma,epsilon\n")
+        for i in range(pos.shape[0]):
+            x, y, z = pos[i]
+            f.write(f"{i},{x:.4f},{y:.4f},{z:.4f},"
+                    f"{float(chg[i]):.6f},{float(sig[i]):.6f},{float(eps[i]):.6f}\n")
     return path
-
-
+ 
+ 
 # ============================================================
 # Model loading
 # ============================================================
 def load_decoder(checkpoint_path, device):
-    """Build a COMPRESSDecoder from the checkpoint's saved config (the same
-    nested structure as configs/decoder.yaml) and load its weights."""
-    ckpt = torch.load(checkpoint_path, map_location=device)
+    """Build a COMPRESSDecoder from the checkpoint's saved config"""
     cfg = ckpt.get("config", {})
     model_cfg = cfg.get("model", {})
     vocab_cfg = cfg.get("vocab", {})
-
+ 
     def g(d, k, default):
         return d.get(k, default)
-
+ 
     decoder = COMPRESSDecoder(
         hidden_dim=g(model_cfg, "hidden_dim", 256), k_hidden_dim=g(model_cfg, "k_hidden_dim", 256),
         edge_dim=g(model_cfg, "edge_dim", 128), time_dim=g(model_cfg, "time_dim", 64),
@@ -292,8 +245,8 @@ def load_decoder(checkpoint_path, device):
     decoder.load_state_dict(state)
     decoder.eval()
     return decoder
-
-
+ 
+ 
 # ============================================================
 # Iterative sampling
 # ============================================================
@@ -304,12 +257,8 @@ def iterative_sample(decoder, V, device, M_atoms,
                      make_s0_kwargs=None):
     """
     Generate one molecule (S) from a COMPRESS representation V.
-    Continuous features (position, charge): flow-matching Euler integration
-    matching training:  vf = (x_1_pred - x_t)/(1-t),  x += vf*dt.
-    Discrete features (atom type, bond type): CTMC (Campbell) sampling with
-    purity-based (high-confidence-first) unmasking.
-        unmask_prob = dt*(1 + eta*t)/(1-t)      (linear schedule, alpha_t = t)
-        mask_prob   = dt*eta
+    Continuous features (position, charge): flow-matching Euler integration, vf = (x_1_pred - x_t)/(1-t). 
+    Discrete features (atom type, bond type): CTMC sampling (see campbell_step_tokens).
     Args:
         V        : (K_n, 6) COMPRESS tensor from make_V.
         M_atoms  : number of atoms to generate (int).
@@ -324,29 +273,29 @@ def iterative_sample(decoder, V, device, M_atoms,
     V = V.clone()
     V[:, :3] = V[:, :3] - v_com
     v_com_np = v_com.squeeze(0).detach().cpu().numpy()   # (3,)
-
+ 
     dummy_S = torch.zeros(M_atoms, 4, device=device)
     S0 = make_S0(dummy_S, V, device=device, **make_s0_kwargs)   # (M_atoms, 4)
     M_n = S0.shape[0]
     K_n = V.shape[0]
     St = S0.unsqueeze(0)          # (1, M, 4)
     V_b = V.unsqueeze(0)          # (1, K_n, 6)
-
+ 
     At_tok = torch.full((M_n,), ATOM_MASK_ID, dtype=torch.long, device=device)
     tri_i, tri_j = torch.triu_indices(M_n, M_n, offset=1, device=device)
     Bt_tok = torch.full((tri_i.shape[0],), BOND_MASK_ID, dtype=torch.long, device=device)
     atom_valid = torch.ones(1, M_n, dtype=torch.bool, device=device)
     site_valid = torch.ones(1, K_n, dtype=torch.bool, device=device)
-
+ 
     S0_np = S0.detach().cpu().numpy()
     final_atom_logits = None
     final_bond_logits = None
-
+ 
     t_grid = torch.linspace(t_start, t_end, n_step + 1, device=device)
-
+ 
     def _atom_tokens_to_batch(tok):
         return tok.unsqueeze(0)                      # (1, M)
-
+ 
     def _bond_tokens_to_batch(tok):
         Bt = torch.full((M_n, M_n), BOND_MASK_ID, dtype=torch.long, device=device)
         d = torch.arange(M_n, device=device)
@@ -354,24 +303,24 @@ def iterative_sample(decoder, V, device, M_atoms,
         Bt[tri_i, tri_j] = tok
         Bt[tri_j, tri_i] = tok
         return Bt.unsqueeze(0)                       # (1, M, M)
-
+ 
     for step in range(n_step):
         t_i = float(t_grid[step])
         t_next = float(t_grid[step + 1])
         dt = t_next - t_i
         last_step = (step == n_step - 1)
-
+ 
         t = torch.full((1,), t_i, dtype=St.dtype, device=device)
         At = _atom_tokens_to_batch(At_tok)
         Bt = _bond_tokens_to_batch(Bt_tok)
-
+ 
         S1_pred, atom_logits, bond_logits = decoder(
             St=St, At=At, Bt=Bt, t=t, V=V_b,
             atom_valid=atom_valid, site_valid=site_valid,
         )
         atom_p1 = torch.softmax(atom_logits[0], dim=-1)
         bond_p1_full = torch.softmax(bond_logits[0], dim=-1)
-
+ 
         # ---- continuous: flow-matching Euler step ----
         denom = max(1.0 - t_i, 1e-3)
         vf = (S1_pred - St) / denom
@@ -379,7 +328,7 @@ def iterative_sample(decoder, V, device, M_atoms,
         if remove_com:
             com = St[:, :, :3].mean(dim=1, keepdim=True)
             St[:, :, :3] = St[:, :, :3] - com
-
+ 
         # ---- discrete atoms: CTMC campbell step ----
         At_tok = campbell_step_tokens(
             At_tok, atom_p1, t_i, dt, mask_index=ATOM_MASK_ID,
@@ -395,16 +344,16 @@ def iterative_sample(decoder, V, device, M_atoms,
         )
         final_atom_logits = atom_logits
         final_bond_logits = bond_logits
-
+ 
     S_final = St[0].detach().cpu().numpy()
     S_final[:, :3] = S_final[:, :3] + v_com_np[None, :]
-
+ 
     atom_ids = At_tok.detach().cpu().numpy()
     still = atom_ids == ATOM_MASK_ID
     if still.any():
         fb = atom_logits_to_ids(final_atom_logits)
         atom_ids[still] = fb[still]
-
+ 
     bond_type = np.zeros((M_n, M_n), dtype=np.int64)
     bt_up = Bt_tok.detach().cpu().numpy()
     ti = tri_i.detach().cpu().numpy()
@@ -415,38 +364,25 @@ def iterative_sample(decoder, V, device, M_atoms,
             bt_up[p] = bl_pred[ti[p], tj[p]]
     bond_type[ti, tj] = bt_up
     bond_type[tj, ti] = bt_up
-
+ 
     return S0_np, S_final, atom_ids, bond_type
-
-
+ 
+ 
 # ============================================================
 # Generation over K1..K(M-1) for one molecule entry
 # ============================================================
 def generate_for_entry(decoder, K_all, M_atoms, device, out_root, tag,
                        k_min=1, k_max=None, n_try=1,
                        n_step=300, target_aa=None, eta=40.0, hc_thresh=0.9):
-    """
-    For one molecule, generate with each K size from k_min to k_max
-    (default k_max = M_atoms - 1). K_all is the dict {"K1":..., "K2":...}.
-    Output goes into out_root with all distinguishing info in the filename:
-        {tag}_K{n}_try{t}_result.mol2
-    Extra files help visualize / inspect what's going into and out of the model:
-        {tag}_K{n}_sites.mol2                the COMPRESS representation V (as a point cloud)
-        {tag}_K{n}_try{t}_init.mol2           the initial atom cloud S0, before refinement
-        {tag}_K{n}_try{t}_result_attr.csv     per-atom element/position/charge of the result
-        {tag}_target.mol2                    the ground-truth molecule, if target_aa is given
-    `tag` is just a label used as the filename prefix, so outputs from different
-    molecules/modes/offsets don't collide in the same --out folder.
-    """
     if k_max is None:
         k_max = M_atoms - 1
     outdir = out_root
     os.makedirs(outdir, exist_ok=True)
-
+ 
     if target_aa is not None:
         write_target_mol2(target_aa, os.path.join(outdir, f"{tag}_target.mol2"),
                           mol_name=f"{tag}_target")
-
+ 
     for k_value in range(k_min, k_max + 1):
         key = f"K{k_value}"
         if key not in K_all:
@@ -456,6 +392,7 @@ def generate_for_entry(decoder, K_all, M_atoms, device, out_root, tag,
         write_init_mol2(V[:, :4].cpu().numpy(),
                          os.path.join(outdir, f"{tag}_K{k_value}_sites.mol2"),
                          mol_name=f"{tag}_K{k_value}_sites")
+        write_site_attr_csv(V_data, os.path.join(outdir, f"{tag}_K{k_value}_sites_attr.csv"))
         for try_idx in range(1, n_try + 1):
             S0_np, S_final, atom_ids, bond_type = iterative_sample(
                 decoder, V, device, M_atoms=M_atoms,
@@ -467,16 +404,15 @@ def generate_for_entry(decoder, K_all, M_atoms, device, out_root, tag,
             write_mol2(S_final, atom_ids, bond_type,
                        os.path.join(outdir, f"{stem}_result.mol2"),
                        mol_name=f"{stem}_result")
-            write_attr_csv(S_final, atom_ids, os.path.join(outdir, f"{stem}_result_attr.csv"))
             print(f"  [{tag}] K{k_value} try{try_idx}: {M_atoms} atoms")
-
-
+ 
+ 
 # ============================================================
 # Main
 # ============================================================
 def main():
     p = argparse.ArgumentParser(description="COMPRESS decoder sampling")
-    p.add_argument("--mode", required=True, choices=["val", "target", "notarget"])
+    p.add_argument("--mode", required=True, choices=["val", "notarget"])
     p.add_argument("--ckpt", default="checkpoints/latest.pt",
                    help="model checkpoint (saved by train.py)")
     p.add_argument("--out", default="outputs")
@@ -487,7 +423,7 @@ def main():
                    help="CTMC high-confidence threshold for purity unmasking")
     p.add_argument("--n_try", type=int, default=1)
     p.add_argument("--m_offset_min", type=int, default=0,
-                   help="lowest atom-count offset (val/target modes). One run generates "
+                   help="lowest atom-count offset (val mode). One run generates "
                         "every offset from m_offset_min..m_offset_max.")
     p.add_argument("--m_offset_max", type=int, default=0,
                    help="highest atom-count offset (inclusive). Must be >= m_offset_min.")
@@ -504,8 +440,6 @@ def main():
                         "set an int to reproduce the same random selection.")
     p.add_argument("--val_frac", type=float, default=0.1)
     p.add_argument("--seed", type=int, default=42)
-    # mode=target
-    p.add_argument("--molecule", default="data/molecule.pt", help="single molecule (mode=target)")
     # mode=notarget
     p.add_argument("--k_file", default=None,
                    help="pre-bundled dict with K_all (mode=notarget). Alternative to "
@@ -527,15 +461,15 @@ def main():
     p.add_argument("--n_atoms_max", type=int, default=None,
                    help="highest M (inclusive). Must be >= n_atoms_min.")
     args = p.parse_args()
-
+ 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Device: {device} | mode: {args.mode}")
-
+ 
     decoder = load_decoder(args.ckpt, device)
     print(f"Loaded decoder: {args.ckpt}")
-
+ 
     os.makedirs(args.out, exist_ok=True)
-
+ 
     if args.mode == "val":
         if os.path.exists(args.val_cache):
             val_raw = torch.load(args.val_cache, map_location="cpu")
@@ -567,23 +501,6 @@ def main():
                     n_try=args.n_try, n_step=args.n_step, eta=args.eta, hc_thresh=args.hc_thresh,
                     target_aa=entry["AA"],
                 )
-    elif args.mode == "target":
-        entry = torch.load(args.molecule, map_location="cpu")
-        if isinstance(entry, list):
-            entry = entry[0]
-        M_target = int(entry["M"])
-        offsets = list(range(args.m_offset_min, args.m_offset_max + 1))
-        print(f"Target molecule: M={M_target}; offsets {offsets}.")
-        for off in offsets:
-            M_atoms = max(1, M_target + off)
-            off_tag = "" if off == 0 else f"_off{off:+d}"
-            print(f"  offset {off:+d}: generating {M_atoms} atoms.")
-            generate_for_entry(
-                decoder, entry["K_all"], M_atoms, device,
-                out_root=args.out, tag=f"target{off_tag}",
-                n_try=args.n_try, n_step=args.n_step, eta=args.eta, hc_thresh=args.hc_thresh,
-                target_aa=entry.get("AA"),
-            )
     elif args.mode == "notarget":
         M_detected = None
         if args.compress_dir:
@@ -599,7 +516,7 @@ def main():
             }
         else:
             raise ValueError("mode=notarget requires --compress_dir or --k_file.")
-
+ 
         if args.n_atoms_min is not None and args.n_atoms_max is not None:
             m_list = list(range(args.n_atoms_min, args.n_atoms_max + 1))
         elif args.n_atoms is not None:
@@ -619,7 +536,7 @@ def main():
                 n_try=args.n_try, n_step=args.n_step, eta=args.eta, hc_thresh=args.hc_thresh,
             )
     print("Done.")
-
-
+ 
+ 
 if __name__ == "__main__":
     main()

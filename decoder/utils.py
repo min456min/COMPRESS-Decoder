@@ -9,9 +9,6 @@ def _unwrap(model):
 
 
 def save_checkpoint(checkpoint_dir, epoch, model, optimizer, loss_dict, config):
-    """Save an end-of-epoch checkpoint (rank 0 only). Writes latest.pt and a
-    per-epoch snapshot; the atomic rename keeps latest.pt safe if a save is
-    interrupted."""
     os.makedirs(checkpoint_dir, exist_ok=True)
     checkpoint = {
         "epoch": epoch,
@@ -30,7 +27,6 @@ def save_checkpoint(checkpoint_dir, epoch, model, optimizer, loss_dict, config):
 
 
 def load_latest_checkpoint(checkpoint_dir, model, optimizer, device):
-    """Returns start_epoch. Resumes from the beginning of the next epoch."""
     latest_path = os.path.join(checkpoint_dir, "latest.pt")
     if not os.path.exists(latest_path):
         print("No checkpoint found. Starting from epoch 1.")

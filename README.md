@@ -69,12 +69,12 @@ torchrun --nproc_per_node=<N> train.py --config configs/decoder.yaml
 ## Sampling
 
 ```bash
-# Generate from the held-out validation molecules included in this repo
-python sample.py --mode val --ckpt checkpoints/latest.pt
+# Generate from the held-out validation molecules included in this repo python sample.py --mode val --ckpt checkpoints/latest.pt
 
 # Generate straight from raw output of the COMPRESS site-optimization tool
 # (https://github.com/ADicksonLab/COMPRESS): point at the folder containing
 # that tool's "{name}_s{K}_COMPRESS.pt" files for one molecule.
+
 python sample.py --mode notarget --ckpt checkpoints/latest.pt --compress_dir path/to/compress_output --name test
 ```
 
@@ -86,15 +86,11 @@ Each generated molecule is saved under `--out` (default `outputs/`) with a
 Per (molecule, K, try), you get:
 
 - `..._sites.mol2` - the COMPRESS representation V (its K sites), as a point cloud
+- `..._sites_attr.csv` -- per-site position, charge, sigma, and epsilon of V  
 - `..._init.mol2` - the initial atom cloud S0, before refinement
 - `..._result.mol2` - the generated molecule
-- `..._result_attr.csv` - per-atom element, position, and charge of the result
 - `{tag}_target.mol2` - the ground-truth molecule (val/target modes only)
 
-Discrete generation (atom type, bond order) uses CTMC sampling with two key
-parameters: `--eta` (stochasticity; default 40.0) and `--n_step` (number of
-Euler/CTMC steps; default 300). Higher `eta` means more re-masking and
-exploration during generation.
 
 ### Quick example
 

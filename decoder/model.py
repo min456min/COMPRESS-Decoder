@@ -90,13 +90,10 @@ class BondStateEmbedding(nn.Module):
 
 
 class VEncoder(nn.Module):
-    """Projects each COMPRESS site's physical attributes to a hidden feature
-    (this is G_V in the method section). Cross-site relationships are handled
-    by VtoSLayer's message passing, not here."""
     def __init__(self, hidden_dim=256, n_rbf=48, d_min=0.0, d_max=12.0):
         super().__init__()
-        # Kept as `k_att_proj` (not `v_proj`) so this attribute's name -- and
-        # therefore its checkpoint state_dict key -- matches already-trained
+        # Kept as `k_att_proj` (not `v_proj`) so this attribute's name - and
+        # therefore its checkpoint state_dict key - matches already-trained
         # checkpoints. Purely a legacy name; it projects V's (site) attributes.
         self.k_att_proj = nn.Sequential(
             nn.Linear(3, hidden_dim), nn.SiLU(), nn.Linear(hidden_dim, hidden_dim),
@@ -113,10 +110,7 @@ class VEncoder(nn.Module):
 
 class VtoSLayer(nn.Module):
     """
-    V -> S conditioning layer (the paper's "V\\to S layer"), EGNN style.
-    Messages are scalar (distance RBF + node/site features); the coordinate
-    update direction comes from the coordinate difference (equivariant) and
-    its magnitude from a scalar MLP (invariant), so the layer is E(3)-equivariant.
+    V -> S conditioning layer.
     """
     def __init__(
         self,
@@ -208,8 +202,7 @@ class VtoSLayer(nn.Module):
 
 
 class StoSLayer(nn.Module):
-    """S <-> S self-update layer (the paper's "S\\to S layer"), EGNN style.
-    E(3)-equivariant (see VtoSLayer)."""
+    """S <-> S self-update layer"""
     def __init__(
         self,
         hidden_dim=256,
@@ -296,8 +289,7 @@ class StoSLayer(nn.Module):
 
 
 class VSGraphBlock(nn.Module):
-    """One message-passing block: an optional V->S layer followed by an
-    S->S layer (the paper's large vs. small blocks)."""
+    """One message-passing block: an optional V->S layer followed by an S->S layer."""
     def __init__(self, hidden_dim=256, k_hidden_dim=256, edge_dim=256,
                  n_rbf=48, d_max=12.0):
         super().__init__()

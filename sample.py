@@ -96,7 +96,7 @@ def campbell_step_tokens(xt, p1, t_i, dt, mask_index,
 
 
 # ============================================================
-# Writers  (mol2 only)
+# Writers
 # ============================================================
 def write_mol2(S_pred, atom_ids, bond_type, path, mol_name="CG"):
     """Write a molecule as MOL2."""
@@ -225,6 +225,7 @@ def write_site_attr_csv(V_data, path):
 # ============================================================
 def load_decoder(checkpoint_path, device):
     """Build a COMPRESSDecoder from the checkpoint's saved config"""
+    ckpt = torch.load(checkpoint_path, map_location=device)
     cfg = ckpt.get("config", {})
     model_cfg = cfg.get("model", {})
     vocab_cfg = cfg.get("vocab", {})
@@ -398,6 +399,14 @@ def generate_for_entry(decoder, K_all, M_atoms, device, out_root, tag,
                 decoder, V, device, M_atoms=M_atoms,
                 n_step=n_step, eta=eta, hc_thresh=hc_thresh,
             )
+            if target_aa is not None:
+                v_com_np = V[:, :3].mean(dim=0).detach().cpu().numpy()
+                target_com_np = np.asarray(target_aa["pos"]).mean(axis=0)
+                offset = target_com_np - v_com_np
+                S0_np = S0_np.copy()
+                S0_np[:, :3] += offset
+                S_final = S_final.copy()
+                S_final[:, :3] += offset
             stem = f"{tag}_K{k_value}_try{try_idx}"
             write_init_mol2(S0_np, os.path.join(outdir, f"{stem}_init.mol2"),
                              mol_name=f"{stem}_init")

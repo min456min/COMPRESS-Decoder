@@ -1,5 +1,7 @@
 # Training configuration for the COMPRESS decoder.
 
+seed: 42
+
 paths:
   input_file: data/data.pt
   checkpoint_dir: checkpoints
